@@ -1,8 +1,9 @@
 
 #include <cstddef>
 #include <type_traits>
-#include <tuple>
 #include <utility>
+
+namespace hogwarts {
 
 // algorithms ----------------------------------------------------------------
 
@@ -190,114 +191,102 @@ constexpr auto transfrom_static_table(cpp17_array<T, dim> table, F f) {
                                                      std::index_sequence<>{});
 }
 
-// tests ---------------------------------------------------------------------
+namespace detail {
 
-// Compiler will show what X & Y are unpacked.
-template <typename X, typename Y>
-constexpr void is_same_test() {
-  static_assert(std::is_same<X, Y>::value, "");
-}
+template <typename... Ts>
+struct variant_impl {
+  // TODO: we can select variant indx_t better.
+  using indx_t = short;
 
-struct transfrom_array_test_action {
-  template <size_t idx>
-  constexpr long operator()(index_constant<idx>, int x) {
-    return x + idx;
-  }
-};
+  // type meta functions -----------------------------------------------------
 
-struct set_zero {
+  // private -----------------------------------------------------------------
+
+  template <indx_t idx_, typename T>
+  struct type_info {
+    using type = T;
+    static constexpr indx_t idx = idx_;
+  };
+
   template <size_t... idxs>
-  constexpr int operator()(std::index_sequence<idxs...>, int) const {
-    return 0;
+  static constexpr auto build_indexed_type_infos_impl(
+      std::index_sequence<idxs...>) {
+    struct result_type : type_info<static_cast<indx_t>(idxs), Ts>... {};
+    return result_type{};
+  }
+
+  using all_type_info = decltype(variant_impl::build_indexed_type_infos_impl(
+      std::index_sequence_for<Ts...>{}));
+
+  template <typename T, indx_t idx>
+  static constexpr auto idx_4_type_impl(const type_info<idx, T>& info) {
+    return info;
+  }
+
+  template <indx_t idx, typename T>
+  static constexpr auto type_4_idx_impl(const type_info<idx, T>& info) {
+    return info;
+  }
+
+  // public: -----------------------------------------------------------------
+
+  template <typename T>
+  static constexpr indx_t idx_4_type_v =
+      decltype(indx_4_type_impl(all_type_info{}))::idx;
+
+  template <indx_t idx>
+  using type_4_idx_t =
+      typename decltype(type_4_idx_impl<idx>(all_type_info{}))::type;
+
+  // memory -----------------------------------------------------------------
+  using memory_t = std::aligned_union_t<0u, Ts...>;
+
+  template <typename T>
+  static T& cast(memory_t& mem) noexcept {
+    return reinterpret_cast<T&>(mem);
+  }
+
+  template <typename T>
+  static const T& cast(const memory_t& mem) noexcept {
+    return reinterpret_cast<const T&>(mem);
+  }
+
+  template <typename T, typename... Args>
+  static void construct(memory_t& mem, Args&&... args) noexcept(T{
+      std::forward<Args>(args)...}) {
+    new (&cast<T>(mem)) T{std::forward<Args>(args)...};
   }
 };
 
-struct full_test {
-  template <size_t idx1, size_t idx2, size_t idx3>
-  constexpr size_t operator()(std::index_sequence<idx1, idx2, idx3>,
-                              size_t x) const {
-    return x + idx1 * 100 + idx2 * 10 + idx3;
+}  // namespace detail
+
+template <typename... Ts>
+class variant {
+  using meta = detail::variant_impl<Ts...>;
+  using indx_t = typename meta::indx_t;
+
+  template <indx_t idx>
+  using type_4_idx_t = typename meta::template type_4_idx_t<idx>;
+
+  template <typename T>
+  static constexpr indx_t idx_4_type_v = meta::template idx_4_type_v<T>;
+
+  using memory_t = typename meta::memory_t;
+
+  memory_t mem_;
+  indx_t idx_;
+
+ public:
+  variant() noexcept(type_4_idx_t<0>{}) {
+    meta::template construct<type_4_idx_t<0>>(mem_);
+    idx_ = 0;
+  }
+
+  template <typename T>
+  variant(T&& rhs) noexcept(T(std::forward<T>(rhs))) {
+    meta::template construct<T>(mem_, std::forward<T>(rhs));
+    idx_ = idx_4_type_v<T>;
   }
 };
 
-constexpr bool check_full_test(const static_table_t<size_t, 3, 4, 5>& table) {
-  for (size_t i = 0; i < table.size(); ++i) {
-    for (size_t j = 0; j < table[i].size(); ++j) {
-      for (size_t k = 0; k < table[i][j].size(); ++k) {
-        if (table[i][j][k] != i * 100 + j * 10 + k)
-          throw i + j + k;
-      }
-    }
-  }
-  return true;
-}
-
-int main() {
-  {
-    is_same_test<static_table_t<int, 3>, cpp17_array<int, 3>>();
-    is_same_test<static_table_t<int, 3, 4>,
-                 cpp17_array<cpp17_array<int, 4>, 3>>();
-  }
-  {
-    constexpr cpp17_array<int, 3> before{{1, 1, 1}};
-
-    constexpr cpp17_array<long, 3> after =
-        cpp_array_transfrom(before, transfrom_array_test_action{});
-
-    constexpr cpp17_array<long, 3> expected_after = {{1, 2, 3}};
-    static_assert(after == expected_after, "");
-  }
-  {
-    constexpr static_table_t<int, 3> t1{};
-    is_same_test<decltype(detect_static_table(t1)), static_table<int, 3>>();
-
-    constexpr static_table_t<int, 3, 4> t2{};
-    is_same_test<decltype(detect_static_table(t2)), static_table<int, 3, 4>>();
-
-    constexpr static_table_t<int, 3, 4, 5> t3{};
-    is_same_test<decltype(detect_static_table(t3)),
-                 static_table<int, 3, 4, 5>>();
-  }
-  {
-    constexpr int x = set_zero{}(std::index_sequence<1, 2, 4>{}, 3);
-    static_assert(x == 0, "");
-  }
-  {
-    constexpr static_table_t<int, 3> step1{{1, 1, 1}};
-    constexpr auto step2 = transfrom_static_table(step1, set_zero{});
-
-    constexpr cpp17_array<int, 3> expected = {{0, 0, 0}};
-    static_assert(step2 == expected, "");
-  }
-  {
-    constexpr std::index_sequence<1, 2, 3> x{};
-    constexpr std::index_sequence<4, 5> y{};
-    is_same_test<decltype(concut(x, y)), std::index_sequence<1, 2, 3, 4, 5>>();
-    is_same_test<decltype(concut(x, index_constant<4>{})),
-                 std::index_sequence<1, 2, 3, 4>>();
-    is_same_test<decltype(concut(index_constant<3>{}, y)),
-                 std::index_sequence<3, 4, 5>>();
-  }
-  {
-    constexpr static_table_t<int, 3, 4> step1{{
-        {{1, 1, 1, 1}},  //
-        {{1, 1, 1, 1}},  //
-        {{1, 1, 1, 1}},  //
-    }};
-    constexpr auto step2 = transfrom_static_table(step1, set_zero{});
-
-    constexpr static_table_t<int, 3, 4> expected = {{
-        {{0, 0, 0, 0}},  //
-        {{0, 0, 0, 0}},  //
-        {{0, 0, 0, 0}},  //
-    }};
-
-    static_assert(step2 == expected, "");
-  }
-  {
-    constexpr static_table_t<int, 3, 4, 5> step1{};
-    constexpr auto step2 = transfrom_static_table(step1, set_zero{});
-    constexpr auto step3 = transfrom_static_table(step2, full_test{});
-    static_assert(check_full_test(step3), "");
-  }
-}
+}  // namespace hogwarts
