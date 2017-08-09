@@ -3,6 +3,9 @@
 
 #include "variant.h"
 
+namespace {
+
+
 namespace static_table_tests {
 
 using namespace hogwarts;
@@ -47,7 +50,6 @@ constexpr bool check_full_test(const static_table_t<size_t, 3, 4, 5>& table) {
   return true;
 }
 
-}  // namespace static_table_tests
 
 TEST_CASE("static_table", "[variant]") {
   using namespace static_table_tests;
@@ -120,6 +122,33 @@ TEST_CASE("static_table", "[variant]") {
   }
 }
 
-TEST_CASE("variant default constructor", "[variant]") {
+}  // namespace static_table_tests
+
+template <short lhs, short rhs>
+constexpr void assert_shorts_equal() {
+  static_assert(lhs == rhs, "");
+}
+
+}  // namespace
+
+
+TEST_CASE("variant_details", "[variant]") {
+  using variant_impl = hogwarts::detail::variant_impl<int, char>;
+  assert_shorts_equal<variant_impl::idx_4_type_v<int>, 0>();
+  assert_shorts_equal<variant_impl::idx_4_type_v<char>, 1>();
+}
+
+TEST_CASE("variant_default_constructor", "[variant]") {
   hogwarts::variant<int, char> v;
+  CHECK(hogwarts::get<int>(v) == 0);
+}
+
+TEST_CASE("variant_fwd_constructor", "[variant]") {
+  hogwarts::variant<int, char> v(3);
+  CHECK(hogwarts::get<int>(v) == 3);
+}
+
+TEST_CASE("variant_get_idx", "[variant]") {
+  hogwarts::variant<int, char> v(3);
+  CHECK(hogwarts::get<0>(v) == 3);
 }

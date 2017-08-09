@@ -1,4 +1,4 @@
-
+#include <cassert>
 #include <cstddef>
 #include <type_traits>
 #include <utility>
@@ -103,7 +103,7 @@ struct static_table<T, dim> {
   using type = cpp17_array<T, dim>;
   using dims_sequence = std::index_sequence<dim>;
 
-  template <typename F, size_t ...previous_idxs>
+  template <typename F, size_t... previous_idxs>
   struct apply_impl {
     F f;
 
@@ -129,7 +129,7 @@ struct static_table<T, dim, dims...> {
   using type = cpp17_array<smaller_table_t, dim>;
   using dims_sequence = std::index_sequence<dim, dims...>;
 
-  template <typename F, size_t ...previous_idxs>
+  template <typename F, size_t... previous_idxs>
   struct apply_impl {
     F f;
 
@@ -191,6 +191,8 @@ constexpr auto transfrom_static_table(cpp17_array<T, dim> table, F f) {
                                                      std::index_sequence<>{});
 }
 
+// variant_impl --------------------------------------------------------------
+
 namespace detail {
 
 template <typename... Ts>
@@ -232,11 +234,13 @@ struct variant_impl {
 
   template <typename T>
   static constexpr indx_t idx_4_type_v =
-      decltype(indx_4_type_impl(all_type_info{}))::idx;
+      decltype(idx_4_type_impl<T>(all_type_info{}))::idx;
 
   template <indx_t idx>
   using type_4_idx_t =
       typename decltype(type_4_idx_impl<idx>(all_type_info{}))::type;
+
+  static constexpr indx_t type_count_v = sizeof ...(Ts);
 
   // memory -----------------------------------------------------------------
   using memory_t = std::aligned_union_t<0u, Ts...>;
@@ -252,10 +256,11 @@ struct variant_impl {
   }
 
   template <typename T, typename... Args>
-  static void construct(memory_t& mem, Args&&... args) noexcept(T{
-      std::forward<Args>(args)...}) {
+  static void construct(memory_t& mem, Args&&... args) {
     new (&cast<T>(mem)) T{std::forward<Args>(args)...};
   }
+
+  struct variant_dependent_functions;
 };
 
 }  // namespace detail
@@ -263,6 +268,8 @@ struct variant_impl {
 template <typename... Ts>
 class variant {
   using meta = detail::variant_impl<Ts...>;
+  friend meta;
+
   using indx_t = typename meta::indx_t;
 
   template <indx_t idx>
@@ -277,16 +284,119 @@ class variant {
   indx_t idx_;
 
  public:
-  variant() noexcept(type_4_idx_t<0>{}) {
+  variant() {
     meta::template construct<type_4_idx_t<0>>(mem_);
     idx_ = 0;
   }
 
   template <typename T>
-  variant(T&& rhs) noexcept(T(std::forward<T>(rhs))) {
+  variant(T&& rhs) {
     meta::template construct<T>(mem_, std::forward<T>(rhs));
     idx_ = idx_4_type_v<T>;
   }
 };
+
+namespace detail {
+
+template <typename... Ts>
+struct variant_impl<Ts...>::variant_dependent_functions {
+  template <typename T, typename V>
+  static decltype(auto) get(V&& v) {
+    assert(v.idx_ == idx_4_type_v<T>);
+    return cast<T>(std::forward<V>(v).mem_);
+  }
+
+  template <size_t idx_, typename V>
+  static decltype(auto) get(V&& v) {
+    constexpr auto idx = static_cast<indx_t>(idx_);
+    assert(v.idx_ == idx);
+    return cast<type_4_idx_t<idx>>(std::forward<V>(v).mem_);
+  }
+};
+
+// declarations are enough for decltype
+std::false_type is_variant_impl(...);
+
+template <typename... Ts>
+std::true_type is_variant_impl(const variant<Ts...>&);
+
+template <typename... Ts>
+variant_impl<Ts...> variant_meta_impl(const variant<Ts...>&);
+
+template <typename V>
+using variant_meta_t = decltype(variant_meta_impl(std::declval<V>()));
+
+template <typename V>
+using varinat_dependent_meta_t =
+    typename variant_meta_t<V>::variant_dependent_functions;
+
+}  // namespace detail
+
+template <typename T>
+constexpr bool is_variant_v =
+    decltype(detail::is_variant_impl(std::declval<T>()))::value;
+
+template <typename T, typename V, typename = std::enable_if_t<is_variant_v<V>>>
+decltype(auto) get(V&& v) {
+  return detail::varinat_dependent_meta_t<V>::template get<T>(
+      std::forward<V>(v));
+}
+
+template <std::size_t idx,
+          typename V,
+          typename = std::enable_if_t<is_variant_v<V>>>
+decltype(auto) get(V&& v) {
+  return detail::varinat_dependent_meta_t<V>::template get<idx>(
+      std::forward<V>(v));
+}
+
+namespace detail {
+
+// F and Vs are already with correct l/rvalue references.
+template <typename F, typename ...Vs>
+decltype(auto) visit_return_type_impl(F&& f, Vs... vs) {
+  return std::forward<F>(f)(get<0>(std::forward<Vs>(vs))...);
+}
+
+template <typename F, typename... Vs>
+using visit_return_type_t =
+    decltype(visit_return_type_impl<F, Vs...>(std::declval<Vs>()...));
+
+template <typename F, typename... Vs>
+using vtable_entry_t = visit_return_type_t<F, Vs...>(*)(F, Vs...);
+
+
+template <typename V>
+constexpr std::size_t variant_type_count_v =
+    static_cast<std::size_t>(variant_meta_t<V>::type_count_v);
+
+struct build_vtable_transform {
+  template <size_t... idxs, typename F, typename ...Vs>
+  constexpr vtable_entry_t<F, Vs...> operator()(std::index_sequence<idxs...>,
+                                                vtable_entry_t<F, Vs...>) {
+    return [](F f, Vs... vs) -> visit_return_type_t<F, Vs...> {
+      return std::forward<F>(f)(get<idxs>(std::forward<Vs>(vs))...);
+    };
+  }
+};
+
+// F and Vs are already with correct l/rvalue references.
+template <typename F, typename... Vs>
+constexpr decltype(auto) build_vtable() {
+  using vtable_t =
+      static_table_t<vtable_entry_t<F, Vs...>, variant_type_count_v<Vs>...>;
+
+  return transfrom_static_table(vtable_t{}, build_vtable_transform{});
+}
+
+template <typename F, typename ...Vs>
+decltype(auto) visit_with_return_value(F&& f, Vs&& ... vs) {
+  auto vtable = build_vtable<decltype(std::forward<F>(f)),
+                             decltype(std::forward<Vs>(vs))...>();
+}
+
+}  // namespace detail
+
+
 
 }  // namespace hogwarts
