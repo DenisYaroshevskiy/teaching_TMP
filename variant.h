@@ -429,8 +429,8 @@ constexpr auto build_vtable() {
 
 template <typename F, typename... Vs>
 decltype(auto) visit_with_return_value(F&& f, Vs&&... vs) {
-  const auto vtable = build_vtable<decltype(std::forward<F>(f)),
-                                   decltype(std::forward<Vs>(vs))...>();
+  static const auto vtable = build_vtable<decltype(std::forward<F>(f)),
+                                          decltype(std::forward<Vs>(vs))...>();
   auto found_entry = index_into_static_table(
       vtable, {{static_cast<size_t>(
                   varinat_meta_dependent_t<Vs>::get_active_idx(vs))...}});
